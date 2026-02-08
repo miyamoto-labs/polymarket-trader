@@ -18,32 +18,19 @@ const HOST = 'https://clob.polymarket.com';
 const CHAIN_ID = 137;
 const PRIVATE_KEY = process.env.PRIVATE_KEY;
 const SIGNATURE_TYPE = parseInt(process.env.SIGNATURE_TYPE || '2');
-const API_SECRET = process.env.API_SECRET; // Simple auth token for n8n
+const API_SECRET = process.env.API_SECRET;
 
 // Auto-derive funder address based on signature type
 let FUNDER = process.env.FUNDER_ADDRESS;
 
 async function deriveFunderAddress(signerAddress) {
-  if (FUNDER) return FUNDER; // Use explicit env var if set
-  
+  if (FUNDER) return FUNDER;
   if (SIGNATURE_TYPE === 2) {
-    // Derive Safe address via CREATE2
-    try {
-      const { deriveSafe } = await import('@polymarket/builder-relayer-client/dist/builder/derive.js');
-      const { getContractConfig } = await import('@polymarket/builder-relayer-client/dist/config.js');
-      const config = getContractConfig(137);
-      FUNDER = deriveSafe(signerAddress, config.SafeContracts.SafeFactory);
-      console.log(`  Auto-derived Safe address: ${FUNDER}`);
-    } catch (e) {
-      console.log(`  ⚠️ Could not derive Safe address: ${e.message}`);
-      // Fallback: hardcoded Safe for our EOA 0x114B7A51A4cF04897434408bd9003626705a2208
-      FUNDER = '0xE73f2BDa06ee3A913A344139a074D319e7e6a32F';
-      console.log(`  Using hardcoded Safe address: ${FUNDER}`);
-    }
+    FUNDER = '0xE73f2BDa06ee3A913A344139a074D319e7e6a32F';
+    console.log(`  Safe address (type 2): ${FUNDER}`);
   } else if (SIGNATURE_TYPE === 0) {
-    FUNDER = signerAddress; // EOA: funder is signer
+    FUNDER = signerAddress;
   }
-  // For type 1, FUNDER must be set via env var (proxy address)
   return FUNDER;
 }
 
@@ -58,29 +45,14 @@ async function initClient() {
   try {
     console.log('Initializing Polymarket CLOB client...');
     console.log(`  Signature Type: ${SIGNATURE_TYPE}`);
-    
     const signer = new Wallet(PRIVATE_KEY);
     console.log(`  Signer: ${signer.address}`);
-
-    // Auto-derive funder address if not set
     await deriveFunderAddress(signer.address);
     console.log(`  Funder: ${FUNDER}`);
-
-    // Step 1: Create temp client to derive API credentials
     const tempClient = new ClobClient(HOST, CHAIN_ID, signer);
     const apiCreds = await tempClient.createOrDeriveApiKey();
     console.log(`  API Key: ${apiCreds.key.substring(0, 8)}...`);
-
-    // Step 2: Initialize full trading client
-    client = new ClobClient(
-      HOST,
-      CHAIN_ID,
-      signer,
-      apiCreds,
-      SIGNATURE_TYPE,
-      FUNDER
-    );
-
+    client = new ClobClient(HOST, CHAIN_ID, signer, apiCreds, SIGNATURE_TYPE, FUNDER);
     clientReady = true;
     console.log('✅ Client initialized successfully');
   } catch (err) {
@@ -92,45 +64,6 @@ async function initClient() {
 // ============================================================
 // AUTH MIDDLEWARE
 // ============================================================
-
-// Helper: Post order to CLOB via curl (bypasses Cloudflare TLS fingerprinting)
-async function postOrderViaCurl(signedOrder, orderType = 'GTC') {
-  // Access internal client methods to build the payload and headers
-  const orderToJson = (await import('@polymarket/clob-client/dist/utilities.js')).orderToJson;
-  const { createL2Headers } = await import('@polymarket/clob-client/dist/headers/index.js');
-  
-  const endpoint = '/order';
-  const apiKey = client.creds?.key || '';
-  const orderPayload = orderToJson(signedOrder, apiKey, orderType, false);
-  const bodyStr = JSON.stringify(orderPayload);
-  
-  const l2HeaderArgs = {
-    method: 'POST',
-    requestPath: endpoint,
-    body: bodyStr,
-  };
-  
-  const headers = await createL2Headers(client.signer, client.creds, l2HeaderArgs);
-  
-  // Build curl command with browser-like headers
-  const headerFlags = Object.entries(headers)
-    .map(([k, v]) => `-H '${k}: ${v}'`)
-    .join(' ');
-  
-  const curlCmd = `curl -s -X POST 'https://clob.polymarket.com${endpoint}' ` +
-    `${headerFlags} ` +
-    `-H 'User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36' ` +
-    `-H 'Accept: application/json' ` +
-    `-H 'Content-Type: application/json' ` +
-    `-H 'Origin: https://polymarket.com' ` +
-    `-H 'Referer: https://polymarket.com/' ` +
-    `-d '${bodyStr.replace(/'/g, "'\\''")}'`;
-  
-  console.log('📡 Posting order via curl...');
-  const result = execSync(curlCmd, { encoding: 'utf8', timeout: 15000 });
-  console.log('📡 Curl response:', result.substring(0, 200));
-  return JSON.parse(result);
-}
 function auth(req, res, next) {
   const token = req.headers['x-api-key'] || req.query.key;
   if (API_SECRET && token !== API_SECRET) {
@@ -142,11 +75,31 @@ function auth(req, res, next) {
   next();
 }
 
+// Helper: Post order via curl (bypasses Cloudflare)
+async function postOrderViaCurl(signedOrder, orderType = 'GTC') {
+  const { orderToJson } = await import('@polymarket/clob-client/dist/utilities.js');
+  const { createL2Headers } = await import('@polymarket/clob-client/dist/headers/index.js');
+  const endpoint = '/order';
+  const apiKey = client.creds?.key || '';
+  const orderPayload = orderToJson(signedOrder, apiKey, orderType, false);
+  const bodyStr = JSON.stringify(orderPayload);
+  const headers = await createL2Headers(client.signer, client.creds, {
+    method: 'POST',
+    requestPath: endpoint,
+    body: bodyStr,
+  });
+  const headerFlags = Object.entries(headers).map(([k, v]) => `-H '${k}: ${v}'`).join(' ');
+  const curlCmd = `curl -s -X POST 'https://clob.polymarket.com${endpoint}' ${headerFlags} -H 'User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36' -H 'Accept: application/json' -H 'Content-Type: application/json' -H 'Origin: https://polymarket.com' -H 'Referer: https://polymarket.com/' -d '${bodyStr.replace(/'/g, "'\\''")}'`;
+  console.log('📡 Posting order via curl...');
+  const result = execSync(curlCmd, { encoding: 'utf8', timeout: 15000 });
+  console.log('📡 Curl response:', result.substring(0, 200));
+  return JSON.parse(result);
+}
+
 // ============================================================
 // ROUTES
 // ============================================================
 
-// Health check
 app.get('/', (req, res) => {
   res.json({
     service: 'polymarket-trader',
@@ -157,146 +110,84 @@ app.get('/', (req, res) => {
   });
 });
 
-// Get account balance / open positions
 app.get('/balance', auth, async (req, res) => {
   try {
-    // Check open orders
     const openOrders = await client.getOpenOrders();
-    
     res.json({
       openOrders: openOrders.length,
       orders: openOrders.slice(0, 10).map(o => ({
-        id: o.id,
-        market: o.asset_id?.substring(0, 20),
-        side: o.side,
-        price: o.price,
-        size: o.original_size,
-        filled: o.size_matched
+        id: o.id, market: o.asset_id?.substring(0, 20),
+        side: o.side, price: o.price, size: o.original_size, filled: o.size_matched
       }))
     });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Get market price for a token
 app.get('/price/:tokenId', auth, async (req, res) => {
   try {
     const { tokenId } = req.params;
     const mid = await client.getMidpoint(tokenId);
     const book = await client.getOrderBook(tokenId);
-    
     res.json({
-      tokenId,
-      midpoint: mid,
+      tokenId, midpoint: mid,
       bestBid: book?.bids?.[0]?.price || null,
       bestAsk: book?.asks?.[0]?.price || null,
-      spread: book?.asks?.[0]?.price && book?.bids?.[0]?.price 
-        ? (parseFloat(book.asks[0].price) - parseFloat(book.bids[0].price)).toFixed(4)
-        : null
+      spread: book?.asks?.[0]?.price && book?.bids?.[0]?.price
+        ? (parseFloat(book.asks[0].price) - parseFloat(book.bids[0].price)).toFixed(4) : null
     });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // ============================================================
-// PLACE A BET (MARKET ORDER)
+// PLACE A BET
 // ============================================================
 app.post('/bet', auth, async (req, res) => {
   try {
-    const { 
-      tokenId,        // CLOB token ID for the outcome
-      side,           // "BUY" or "SELL"
-      amount,         // Amount in USDC to spend
-      price,          // Limit price (optional, uses midpoint if not set)
-      orderType       // "FOK" (fill-or-kill) or "GTC" (good-till-cancel)
-    } = req.body;
-
+    const { tokenId, side, amount, price, orderType } = req.body;
     if (!tokenId || !side || !amount) {
-      return res.status(400).json({ 
-        error: 'Missing required fields: tokenId, side, amount' 
-      });
+      return res.status(400).json({ error: 'Missing required fields: tokenId, side, amount' });
     }
-
     const sideEnum = side.toUpperCase() === 'BUY' ? Side.BUY : Side.SELL;
-    
-    // Get current market price if no limit price specified
     let orderPrice = price;
     if (!orderPrice) {
       const mid = await client.getMidpoint(tokenId);
-      // For BUY: bid slightly above mid to ensure fill
-      // For SELL: ask slightly below mid
-      orderPrice = sideEnum === Side.BUY 
+      orderPrice = sideEnum === Side.BUY
         ? Math.min(parseFloat(mid) + 0.02, 0.99)
         : Math.max(parseFloat(mid) - 0.02, 0.01);
     }
-
-    // Calculate size (shares) from amount and price
     const size = parseFloat(amount) / parseFloat(orderPrice);
-
-    console.log(`📊 Placing order: ${side} ${size.toFixed(2)} shares @ ${orderPrice}`);
-    console.log(`   Token: ${tokenId.substring(0, 20)}...`);
-    console.log(`   Amount: $${amount}`);
-
-    // Let the CLOB client auto-detect negRisk and tickSize from the token
-    // DO NOT pass negRisk: false, as that overrides auto-detection via nullish coalescing
-    
-    // Still need tick size for price rounding
     let tickSize;
-    try {
-      tickSize = await client.getTickSize(tokenId);
-    } catch (e) {
-      tickSize = '0.01';
-    }
+    try { tickSize = await client.getTickSize(tokenId); } catch (e) { tickSize = '0.01'; }
     const tickDecimal = parseFloat(tickSize);
     const roundedPrice = Math.round(orderPrice / tickDecimal) * tickDecimal;
+    const roundedSize = Math.floor(size * 100) / 100;
 
+    console.log(`📊 Placing order: ${side} ${roundedSize} shares @ ${roundedPrice}`);
     const signedOrder = await client.createOrder({
-      tokenID: tokenId,
-      price: roundedPrice,
-      size: Math.floor(size * 100) / 100,
-      side: sideEnum,
+      tokenID: tokenId, price: roundedPrice, size: roundedSize, side: sideEnum,
     });
-
-    console.log(`📝 Order signed locally, posting via curl...`);
-    
-    // Post via curl to bypass Cloudflare
     let postResult;
     try {
-      postResult = await postOrderViaCurl(signedOrder, 'GTC');
+      postResult = await postOrderViaCurl(signedOrder, orderType || 'GTC');
     } catch (curlErr) {
-      // Fallback to native client post
       console.log(`⚠️ Curl failed (${curlErr.message}), trying native...`);
       postResult = await client.postOrder(signedOrder);
     }
-
     console.log(`✅ Order result: ${JSON.stringify(postResult)}`);
-
     res.json({
       success: !postResult.error,
       orderId: postResult.orderID || postResult.orderid,
-      status: postResult.status,
-      side,
-      price: roundedPrice,
-      size: Math.floor(size * 100) / 100,
-      amount: parseFloat(amount),
-      tokenId,
-      response: postResult
+      status: postResult.status, side, price: roundedPrice,
+      size: roundedSize, amount: parseFloat(amount), tokenId, response: postResult
     });
-
   } catch (err) {
     console.error(`❌ Order failed: ${err.message}`);
-    res.status(500).json({ 
-      error: err.message,
-      detail: err.response?.data || err.stack?.substring(0, 500)
-    });
+    res.status(500).json({ error: err.message, detail: err.response?.data || err.stack?.substring(0, 500) });
   }
 });
 
 // ============================================================
-// SIGN ORDER (returns signed payload + headers for external POST)
-// Use this if direct posting is blocked by Cloudflare
+// SIGN ORDER (for external POST - bypasses Cloudflare)
 // ============================================================
 app.post('/sign-order', auth, async (req, res) => {
   try {
@@ -304,67 +195,44 @@ app.post('/sign-order', auth, async (req, res) => {
     if (!tokenId || !side || !amount) {
       return res.status(400).json({ error: 'Missing: tokenId, side, amount' });
     }
-
     const sideEnum = side.toUpperCase() === 'BUY' ? Side.BUY : Side.SELL;
-    
     let orderPrice = price;
     if (!orderPrice) {
       const mid = await client.getMidpoint(tokenId);
-      orderPrice = sideEnum === Side.BUY 
+      orderPrice = sideEnum === Side.BUY
         ? Math.min(parseFloat(mid) + 0.02, 0.99)
         : Math.max(parseFloat(mid) - 0.02, 0.01);
     }
-
     const size = parseFloat(amount) / parseFloat(orderPrice);
-    // Let CLOB client auto-detect negRisk and tickSize
     let tickSize;
-    try {
-      tickSize = await client.getTickSize(tokenId);
-    } catch (e) {
-      tickSize = '0.01';
-    }
-
+    try { tickSize = await client.getTickSize(tokenId); } catch (e) { tickSize = '0.01'; }
     const tickDecimal = parseFloat(tickSize);
     const roundedPrice = Math.round(orderPrice / tickDecimal) * tickDecimal;
     const roundedSize = Math.floor(size * 100) / 100;
 
-    // Sign the order locally (client auto-detects negRisk)
     const signedOrder = await client.createOrder({
-      tokenID: tokenId,
-      price: roundedPrice,
-      size: roundedSize,
-      side: sideEnum,
+      tokenID: tokenId, price: roundedPrice, size: roundedSize, side: sideEnum,
     });
 
-    // Build the POST payload and L2 auth headers
     const { orderToJson } = await import('@polymarket/clob-client/dist/utilities.js');
     const { createL2Headers } = await import('@polymarket/clob-client/dist/headers/index.js');
-    
     const endpoint = '/order';
     const apiKey = client.creds?.key || '';
     const orderPayload = orderToJson(signedOrder, apiKey, 'GTC', false);
     const bodyStr = JSON.stringify(orderPayload);
-    
-    const l2HeaderArgs = {
-      method: 'POST',
-      requestPath: endpoint,
-      body: bodyStr,
-    };
-    
-    const headers = await createL2Headers(client.signer, client.creds, l2HeaderArgs);
+    const headers = await createL2Headers(client.signer, client.creds, {
+      method: 'POST', requestPath: endpoint, body: bodyStr,
+    });
 
     console.log(`📝 Order signed. Price: ${roundedPrice}, Size: ${roundedSize}, Side: ${side}`);
-
     res.json({
       success: true,
-      // Everything needed for external POST to https://clob.polymarket.com/order
       postUrl: 'https://clob.polymarket.com/order',
       postBody: orderPayload,
-      postBodyRaw: bodyStr,  // Use this EXACT string as the POST body to match HMAC
+      postBodyRaw: bodyStr,
       postHeaders: headers,
       meta: { side, price: roundedPrice, size: roundedSize, amount: parseFloat(amount), tokenId }
     });
-
   } catch (err) {
     console.error(`❌ Sign failed: ${err.message}`);
     res.status(500).json({ error: err.message });
@@ -372,59 +240,39 @@ app.post('/sign-order', auth, async (req, res) => {
 });
 
 // ============================================================
-// CANCEL AN ORDER
+// OTHER ROUTES
 // ============================================================
 app.delete('/order/:orderId', auth, async (req, res) => {
   try {
-    const { orderId } = req.params;
-    const result = await client.cancelOrder(orderId);
+    const result = await client.cancelOrder(req.params.orderId);
     res.json({ success: true, result });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ============================================================
-// GET TRADE HISTORY
-// ============================================================
 app.get('/trades', auth, async (req, res) => {
   try {
     const trades = await client.getTrades();
     res.json({
       count: trades.length,
       trades: trades.slice(0, 20).map(t => ({
-        id: t.id,
-        market: t.asset_id?.substring(0, 20),
-        side: t.side,
-        price: t.price,
-        size: t.size,
-        status: t.status,
-        timestamp: t.created_at
+        id: t.id, market: t.asset_id?.substring(0, 20),
+        side: t.side, price: t.price, size: t.size,
+        status: t.status, timestamp: t.created_at
       }))
     });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ============================================================
-// LOOKUP MARKET TOKEN IDS
-// ============================================================
 app.get('/market/:conditionId', auth, async (req, res) => {
   try {
-    const { conditionId } = req.params;
-    const market = await client.getMarket(conditionId);
-    res.json(market);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+    res.json(await client.getMarket(req.params.conditionId));
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // ============================================================
 // START SERVER
 // ============================================================
 const PORT = process.env.PORT || 3000;
-
 app.listen(PORT, async () => {
   console.log(`🚀 Polymarket Trader running on port ${PORT}`);
   await initClient();

@@ -2,9 +2,35 @@ import express from 'express';
 import cors from 'cors';
 import { Wallet } from 'ethers';
 import { ClobClient, Side } from '@polymarket/clob-client';
+import axios from 'axios';
 import dotenv from 'dotenv';
 
 dotenv.config();
+
+// ============================================================
+// PATCH: Override axios defaults to bypass Cloudflare blocking
+// The CLOB client uses a bot-like User-Agent that CF blocks on POSTs
+// ============================================================
+const BROWSER_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+
+// Intercept all axios requests to fix headers
+axios.interceptors.request.use((config) => {
+  if (config.url && config.url.includes('clob.polymarket.com')) {
+    config.headers['User-Agent'] = BROWSER_UA;
+    config.headers['Accept'] = 'application/json, text/plain, */*';
+    config.headers['Accept-Language'] = 'en-US,en;q=0.9';
+    config.headers['Accept-Encoding'] = 'gzip, deflate, br';
+    config.headers['Origin'] = 'https://polymarket.com';
+    config.headers['Referer'] = 'https://polymarket.com/';
+    config.headers['Sec-Fetch-Dest'] = 'empty';
+    config.headers['Sec-Fetch-Mode'] = 'cors';
+    config.headers['Sec-Fetch-Site'] = 'same-site';
+    config.headers['sec-ch-ua'] = '"Chromium";v="131", "Not_A Brand";v="24"';
+    config.headers['sec-ch-ua-mobile'] = '?0';
+    config.headers['sec-ch-ua-platform'] = '"macOS"';
+  }
+  return config;
+});
 
 const app = express();
 app.use(cors());
@@ -15,8 +41,8 @@ app.use(express.json());
 // ============================================================
 const HOST = 'https://clob.polymarket.com';
 const CHAIN_ID = 137;
-const PRIVATE_KEY = process.env.PRIVATE_KEY || process.env.private_key;
-const FUNDER = process.env.FUNDER_ADDRESS || process.env.funder_address;
+const PRIVATE_KEY = process.env.PRIVATE_KEY;
+const FUNDER = process.env.FUNDER_ADDRESS;
 const SIGNATURE_TYPE = parseInt(process.env.SIGNATURE_TYPE || '1');
 const API_SECRET = process.env.API_SECRET; // Simple auth token for n8n
 
@@ -274,14 +300,7 @@ app.get('/market/:conditionId', auth, async (req, res) => {
 // ============================================================
 const PORT = process.env.PORT || 3000;
 
-app.listen(PORT, '0.0.0.0', async () => {
+app.listen(PORT, async () => {
   console.log(`🚀 Polymarket Trader running on port ${PORT}`);
-  console.log(`  PRIVATE_KEY set: ${!!PRIVATE_KEY}`);
-  console.log(`  FUNDER set: ${!!FUNDER}`);
-  console.log(`  SIGNATURE_TYPE: ${SIGNATURE_TYPE}`);
-  try {
-    await initClient();
-  } catch (err) {
-    console.error('Client init failed (server still running):', err.message);
-  }
+  await initClient();
 });

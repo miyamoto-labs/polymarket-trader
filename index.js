@@ -17,9 +17,35 @@ app.use(express.json());
 const HOST = 'https://clob.polymarket.com';
 const CHAIN_ID = 137;
 const PRIVATE_KEY = process.env.PRIVATE_KEY;
-const FUNDER = process.env.FUNDER_ADDRESS;
-const SIGNATURE_TYPE = parseInt(process.env.SIGNATURE_TYPE || '1');
+const SIGNATURE_TYPE = parseInt(process.env.SIGNATURE_TYPE || '2');
 const API_SECRET = process.env.API_SECRET; // Simple auth token for n8n
+
+// Auto-derive funder address based on signature type
+let FUNDER = process.env.FUNDER_ADDRESS;
+
+async function deriveFunderAddress(signerAddress) {
+  if (FUNDER) return FUNDER; // Use explicit env var if set
+  
+  if (SIGNATURE_TYPE === 2) {
+    // Derive Safe address via CREATE2
+    try {
+      const { deriveSafe } = await import('@polymarket/builder-relayer-client/dist/builder/derive.js');
+      const { getContractConfig } = await import('@polymarket/builder-relayer-client/dist/config.js');
+      const config = getContractConfig(137);
+      FUNDER = deriveSafe(signerAddress, config.SafeContracts.SafeFactory);
+      console.log(`  Auto-derived Safe address: ${FUNDER}`);
+    } catch (e) {
+      console.log(`  ⚠️ Could not derive Safe address: ${e.message}`);
+      // Fallback: hardcoded Safe for our EOA 0x114B7A51A4cF04897434408bd9003626705a2208
+      FUNDER = '0xE73f2BDa06ee3A913A344139a074D319e7e6a32F';
+      console.log(`  Using hardcoded Safe address: ${FUNDER}`);
+    }
+  } else if (SIGNATURE_TYPE === 0) {
+    FUNDER = signerAddress; // EOA: funder is signer
+  }
+  // For type 1, FUNDER must be set via env var (proxy address)
+  return FUNDER;
+}
 
 // ============================================================
 // CLIENT INITIALIZATION
@@ -31,11 +57,14 @@ let initError = null;
 async function initClient() {
   try {
     console.log('Initializing Polymarket CLOB client...');
-    console.log(`  Funder: ${FUNDER}`);
     console.log(`  Signature Type: ${SIGNATURE_TYPE}`);
     
     const signer = new Wallet(PRIVATE_KEY);
     console.log(`  Signer: ${signer.address}`);
+
+    // Auto-derive funder address if not set
+    await deriveFunderAddress(signer.address);
+    console.log(`  Funder: ${FUNDER}`);
 
     // Step 1: Create temp client to derive API credentials
     const tempClient = new ClobClient(HOST, CHAIN_ID, signer);

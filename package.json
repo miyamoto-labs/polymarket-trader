@@ -1,12 +1,10 @@
-FROM node:20-slim
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
 
-WORKDIR /app
-
-COPY package.json ./
-RUN npm install --production
-
-COPY . .
-
-EXPOSE 3000
-
-CMD ["node", "index.js"]
+[deploy]
+startCommand = "node index.js"
+healthcheckPath = "/"
+healthcheckTimeout = 10
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3

@@ -15,8 +15,8 @@ app.use(express.json());
 // ============================================================
 const HOST = 'https://clob.polymarket.com';
 const CHAIN_ID = 137;
-const PRIVATE_KEY = process.env.PRIVATE_KEY;
-const FUNDER = process.env.FUNDER_ADDRESS;
+const PRIVATE_KEY = process.env.PRIVATE_KEY || process.env.private_key;
+const FUNDER = process.env.FUNDER_ADDRESS || process.env.funder_address;
 const SIGNATURE_TYPE = parseInt(process.env.SIGNATURE_TYPE || '1');
 const API_SECRET = process.env.API_SECRET; // Simple auth token for n8n
 
@@ -274,7 +274,14 @@ app.get('/market/:conditionId', auth, async (req, res) => {
 // ============================================================
 const PORT = process.env.PORT || 3000;
 
-app.listen(PORT, async () => {
+app.listen(PORT, '0.0.0.0', async () => {
   console.log(`🚀 Polymarket Trader running on port ${PORT}`);
-  await initClient();
+  console.log(`  PRIVATE_KEY set: ${!!PRIVATE_KEY}`);
+  console.log(`  FUNDER set: ${!!FUNDER}`);
+  console.log(`  SIGNATURE_TYPE: ${SIGNATURE_TYPE}`);
+  try {
+    await initClient();
+  } catch (err) {
+    console.error('Client init failed (server still running):', err.message);
+  }
 });

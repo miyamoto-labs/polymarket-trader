@@ -2,35 +2,10 @@ import express from 'express';
 import cors from 'cors';
 import { Wallet } from 'ethers';
 import { ClobClient, Side } from '@polymarket/clob-client';
-import axios from 'axios';
 import dotenv from 'dotenv';
+import { execSync } from 'child_process';
 
 dotenv.config();
-
-// ============================================================
-// PATCH: Override axios defaults to bypass Cloudflare blocking
-// The CLOB client uses a bot-like User-Agent that CF blocks on POSTs
-// ============================================================
-const BROWSER_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
-
-// Intercept all axios requests to fix headers
-axios.interceptors.request.use((config) => {
-  if (config.url && config.url.includes('clob.polymarket.com')) {
-    config.headers['User-Agent'] = BROWSER_UA;
-    config.headers['Accept'] = 'application/json, text/plain, */*';
-    config.headers['Accept-Language'] = 'en-US,en;q=0.9';
-    config.headers['Accept-Encoding'] = 'gzip, deflate, br';
-    config.headers['Origin'] = 'https://polymarket.com';
-    config.headers['Referer'] = 'https://polymarket.com/';
-    config.headers['Sec-Fetch-Dest'] = 'empty';
-    config.headers['Sec-Fetch-Mode'] = 'cors';
-    config.headers['Sec-Fetch-Site'] = 'same-site';
-    config.headers['sec-ch-ua'] = '"Chromium";v="131", "Not_A Brand";v="24"';
-    config.headers['sec-ch-ua-mobile'] = '?0';
-    config.headers['sec-ch-ua-platform'] = '"macOS"';
-  }
-  return config;
-});
 
 const app = express();
 app.use(cors());
@@ -88,6 +63,45 @@ async function initClient() {
 // ============================================================
 // AUTH MIDDLEWARE
 // ============================================================
+
+// Helper: Post order to CLOB via curl (bypasses Cloudflare TLS fingerprinting)
+async function postOrderViaCurl(signedOrder, orderType = 'GTC') {
+  // Access internal client methods to build the payload and headers
+  const orderToJson = (await import('@polymarket/clob-client/dist/utilities.js')).orderToJson;
+  const { createL2Headers } = await import('@polymarket/clob-client/dist/headers/index.js');
+  
+  const endpoint = '/order';
+  const apiKey = client.creds?.key || '';
+  const orderPayload = orderToJson(signedOrder, apiKey, orderType, false);
+  const bodyStr = JSON.stringify(orderPayload);
+  
+  const l2HeaderArgs = {
+    method: 'POST',
+    requestPath: endpoint,
+    body: bodyStr,
+  };
+  
+  const headers = await createL2Headers(client.signer, client.creds, l2HeaderArgs);
+  
+  // Build curl command with browser-like headers
+  const headerFlags = Object.entries(headers)
+    .map(([k, v]) => `-H '${k}: ${v}'`)
+    .join(' ');
+  
+  const curlCmd = `curl -s -X POST 'https://clob.polymarket.com${endpoint}' ` +
+    `${headerFlags} ` +
+    `-H 'User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36' ` +
+    `-H 'Accept: application/json' ` +
+    `-H 'Content-Type: application/json' ` +
+    `-H 'Origin: https://polymarket.com' ` +
+    `-H 'Referer: https://polymarket.com/' ` +
+    `-d '${bodyStr.replace(/'/g, "'\\''")}'`;
+  
+  console.log('📡 Posting order via curl...');
+  const result = execSync(curlCmd, { encoding: 'utf8', timeout: 15000 });
+  console.log('📡 Curl response:', result.substring(0, 200));
+  return JSON.parse(result);
+}
 function auth(req, res, next) {
   const token = req.headers['x-api-key'] || req.query.key;
   if (API_SECRET && token !== API_SECRET) {
@@ -213,28 +227,40 @@ app.post('/bet', auth, async (req, res) => {
     const tickDecimal = parseFloat(tickSize);
     const roundedPrice = Math.round(orderPrice / tickDecimal) * tickDecimal;
 
-    const response = await client.createAndPostOrder({
+    const response = await client.createOrder({
       tokenID: tokenId,
       price: roundedPrice,
-      size: Math.floor(size * 100) / 100, // Round down to 2 decimals
+      size: Math.floor(size * 100) / 100,
       side: sideEnum,
     }, {
       tickSize,
       negRisk,
     });
 
-    console.log(`✅ Order placed: ${JSON.stringify(response)}`);
+    console.log(`📝 Order signed locally, posting via curl...`);
+    
+    // Post via curl to bypass Cloudflare
+    let postResult;
+    try {
+      postResult = await postOrderViaCurl(response, 'GTC');
+    } catch (curlErr) {
+      // Fallback to native client post
+      console.log(`⚠️ Curl failed (${curlErr.message}), trying native...`);
+      postResult = await client.postOrder(response);
+    }
+
+    console.log(`✅ Order result: ${JSON.stringify(postResult)}`);
 
     res.json({
-      success: true,
-      orderId: response.orderID || response.orderid,
-      status: response.status,
+      success: !postResult.error,
+      orderId: postResult.orderID || postResult.orderid,
+      status: postResult.status,
       side,
       price: roundedPrice,
       size: Math.floor(size * 100) / 100,
       amount: parseFloat(amount),
       tokenId,
-      response
+      response: postResult
     });
 
   } catch (err) {

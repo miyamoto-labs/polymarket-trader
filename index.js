@@ -227,7 +227,7 @@ app.post('/bet', auth, async (req, res) => {
     const tickDecimal = parseFloat(tickSize);
     const roundedPrice = Math.round(orderPrice / tickDecimal) * tickDecimal;
 
-    const response = await client.createOrder({
+    const signedOrder = await client.createOrder({
       tokenID: tokenId,
       price: roundedPrice,
       size: Math.floor(size * 100) / 100,
@@ -242,11 +242,11 @@ app.post('/bet', auth, async (req, res) => {
     // Post via curl to bypass Cloudflare
     let postResult;
     try {
-      postResult = await postOrderViaCurl(response, 'GTC');
+      postResult = await postOrderViaCurl(signedOrder, 'GTC');
     } catch (curlErr) {
       // Fallback to native client post
       console.log(`⚠️ Curl failed (${curlErr.message}), trying native...`);
-      postResult = await client.postOrder(response);
+      postResult = await client.postOrder(signedOrder);
     }
 
     console.log(`✅ Order result: ${JSON.stringify(postResult)}`);
@@ -269,6 +269,81 @@ app.post('/bet', auth, async (req, res) => {
       error: err.message,
       detail: err.response?.data || err.stack?.substring(0, 500)
     });
+  }
+});
+
+// ============================================================
+// SIGN ORDER (returns signed payload + headers for external POST)
+// Use this if direct posting is blocked by Cloudflare
+// ============================================================
+app.post('/sign-order', auth, async (req, res) => {
+  try {
+    const { tokenId, side, amount, price } = req.body;
+    if (!tokenId || !side || !amount) {
+      return res.status(400).json({ error: 'Missing: tokenId, side, amount' });
+    }
+
+    const sideEnum = side.toUpperCase() === 'BUY' ? Side.BUY : Side.SELL;
+    
+    let orderPrice = price;
+    if (!orderPrice) {
+      const mid = await client.getMidpoint(tokenId);
+      orderPrice = sideEnum === Side.BUY 
+        ? Math.min(parseFloat(mid) + 0.02, 0.99)
+        : Math.max(parseFloat(mid) - 0.02, 0.01);
+    }
+
+    const size = parseFloat(amount) / parseFloat(orderPrice);
+    let tickSize = '0.01';
+    let negRisk = false;
+    try {
+      const marketInfo = await client.getMarket(tokenId);
+      if (marketInfo?.minimum_tick_size) tickSize = marketInfo.minimum_tick_size;
+    } catch (e) {}
+
+    const tickDecimal = parseFloat(tickSize);
+    const roundedPrice = Math.round(orderPrice / tickDecimal) * tickDecimal;
+    const roundedSize = Math.floor(size * 100) / 100;
+
+    // Sign the order locally
+    const signedOrder = await client.createOrder({
+      tokenID: tokenId,
+      price: roundedPrice,
+      size: roundedSize,
+      side: sideEnum,
+    }, { tickSize, negRisk });
+
+    // Build the POST payload and L2 auth headers
+    const { orderToJson } = await import('@polymarket/clob-client/dist/utilities.js');
+    const { createL2Headers } = await import('@polymarket/clob-client/dist/headers/index.js');
+    
+    const endpoint = '/order';
+    const apiKey = client.creds?.key || '';
+    const orderPayload = orderToJson(signedOrder, apiKey, 'GTC', false);
+    const bodyStr = JSON.stringify(orderPayload);
+    
+    const l2HeaderArgs = {
+      method: 'POST',
+      requestPath: endpoint,
+      body: bodyStr,
+    };
+    
+    const headers = await createL2Headers(client.signer, client.creds, l2HeaderArgs);
+
+    console.log(`📝 Order signed. Price: ${roundedPrice}, Size: ${roundedSize}, Side: ${side}`);
+
+    res.json({
+      success: true,
+      // Everything needed for external POST to https://clob.polymarket.com/order
+      postUrl: 'https://clob.polymarket.com/order',
+      postBody: orderPayload,
+      postHeaders: headers,
+      meta: { side, price: roundedPrice, size: roundedSize, amount: parseFloat(amount), tokenId }
+    });
+
+  } catch (err) {
+    console.error(`❌ Sign failed: ${err.message}`);
+    res.status(500).json({ error: err.message });
   }
 });
 

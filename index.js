@@ -210,20 +210,16 @@ app.post('/bet', auth, async (req, res) => {
     console.log(`   Token: ${tokenId.substring(0, 20)}...`);
     console.log(`   Amount: $${amount}`);
 
-    // Get tick size for the market
-    let tickSize = '0.01';
-    let negRisk = false;
+    // Let the CLOB client auto-detect negRisk and tickSize from the token
+    // DO NOT pass negRisk: false, as that overrides auto-detection via nullish coalescing
+    
+    // Still need tick size for price rounding
+    let tickSize;
     try {
-      // Try to get market info for proper tick size
-      const marketInfo = await client.getMarket(tokenId);
-      if (marketInfo?.minimum_tick_size) {
-        tickSize = marketInfo.minimum_tick_size;
-      }
+      tickSize = await client.getTickSize(tokenId);
     } catch (e) {
-      // Default tick size is fine
+      tickSize = '0.01';
     }
-
-    // Round price to tick size
     const tickDecimal = parseFloat(tickSize);
     const roundedPrice = Math.round(orderPrice / tickDecimal) * tickDecimal;
 
@@ -232,9 +228,6 @@ app.post('/bet', auth, async (req, res) => {
       price: roundedPrice,
       size: Math.floor(size * 100) / 100,
       side: sideEnum,
-    }, {
-      tickSize,
-      negRisk,
     });
 
     console.log(`📝 Order signed locally, posting via curl...`);
@@ -294,24 +287,25 @@ app.post('/sign-order', auth, async (req, res) => {
     }
 
     const size = parseFloat(amount) / parseFloat(orderPrice);
-    let tickSize = '0.01';
-    let negRisk = false;
+    // Let CLOB client auto-detect negRisk and tickSize
+    let tickSize;
     try {
-      const marketInfo = await client.getMarket(tokenId);
-      if (marketInfo?.minimum_tick_size) tickSize = marketInfo.minimum_tick_size;
-    } catch (e) {}
+      tickSize = await client.getTickSize(tokenId);
+    } catch (e) {
+      tickSize = '0.01';
+    }
 
     const tickDecimal = parseFloat(tickSize);
     const roundedPrice = Math.round(orderPrice / tickDecimal) * tickDecimal;
     const roundedSize = Math.floor(size * 100) / 100;
 
-    // Sign the order locally
+    // Sign the order locally (client auto-detects negRisk)
     const signedOrder = await client.createOrder({
       tokenID: tokenId,
       price: roundedPrice,
       size: roundedSize,
       side: sideEnum,
-    }, { tickSize, negRisk });
+    });
 
     // Build the POST payload and L2 auth headers
     const { orderToJson } = await import('@polymarket/clob-client/dist/utilities.js');
@@ -337,6 +331,7 @@ app.post('/sign-order', auth, async (req, res) => {
       // Everything needed for external POST to https://clob.polymarket.com/order
       postUrl: 'https://clob.polymarket.com/order',
       postBody: orderPayload,
+      postBodyRaw: bodyStr,  // Use this EXACT string as the POST body to match HMAC
       postHeaders: headers,
       meta: { side, price: roundedPrice, size: roundedSize, amount: parseFloat(amount), tokenId }
     });

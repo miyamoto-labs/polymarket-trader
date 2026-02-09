@@ -39,9 +39,19 @@ async function initClient() {
     signer = new Wallet(PRIVATE_KEY);
     console.log(`  Signer: ${signer.address}`);
 
-    const tempClient = new ClobClient(HOST, CHAIN_ID, signer);
-    apiCreds = await tempClient.createOrDeriveApiKey();
-    console.log(`  API Key: ${apiCreds.key.substring(0, 8)}...`);
+    // Use env creds if available, otherwise derive
+    if (process.env.CLOB_API_KEY && process.env.CLOB_SECRET && process.env.CLOB_PASSPHRASE) {
+      apiCreds = {
+        key: process.env.CLOB_API_KEY,
+        secret: process.env.CLOB_SECRET,
+        passphrase: process.env.CLOB_PASSPHRASE
+      };
+      console.log(`  API Key (from env): ${apiCreds.key.substring(0, 8)}...`);
+    } else {
+      const tempClient = new ClobClient(HOST, CHAIN_ID, signer, undefined, SIGNATURE_TYPE, FUNDER);
+      apiCreds = await tempClient.createOrDeriveApiKey();
+      console.log(`  API Key (derived): ${apiCreds.key.substring(0, 8)}...`);
+    }
 
     client = new ClobClient(
       HOST,
@@ -157,13 +167,28 @@ app.post('/bet', auth, async (req, res) => {
     let tickSize = '0.01';
     let negRisk = false;
     try {
-      const marketInfo = await client.getMarket(tokenId);
-      if (marketInfo?.minimum_tick_size) tickSize = marketInfo.minimum_tick_size;
-      if (marketInfo?.neg_risk) negRisk = marketInfo.neg_risk;
-    } catch (e) {}
+      // Check neg-risk status via CLOB endpoint
+      const nrResp = await fetch(`${HOST}/neg-risk?token_id=${tokenId}`);
+      const nrData = await nrResp.json();
+      if (nrData.neg_risk === true) negRisk = true;
+    } catch (e) { /* default false */ }
+    try {
+      // Try tick-size endpoint first (works with token IDs)
+      const tsResp = await client.getTickSize(tokenId);
+      if (tsResp) tickSize = tsResp.toString();
+    } catch (e) {
+      try {
+        const marketInfo = await client.getMarket(tokenId);
+        if (marketInfo?.minimum_tick_size) tickSize = marketInfo.minimum_tick_size.toString();
+      } catch (e2) {
+        console.log(`⚠️ Using default tick size ${tickSize}`);
+      }
+    }
 
     const tickDecimal = parseFloat(tickSize);
     const roundedPrice = Math.round(orderPrice / tickDecimal) * tickDecimal;
+
+    console.log(`   Tick: ${tickSize}, negRisk: ${negRisk}, roundedPrice: ${roundedPrice}`);
 
     const response = await client.createAndPostOrder({
       tokenID: tokenId,

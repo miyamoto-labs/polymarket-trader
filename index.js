@@ -277,63 +277,46 @@ app.get('/get-order/:key', auth, (req, res) => {
   res.json(order);
 });
 
-// Forward order via curl (for proxy/CF bypass)
+// Forward order (uses CLOB client directly)
 app.post('/forward-order', auth, async (req, res) => {
   try {
     const { tokenId, side, amount, price } = req.body;
     if (!tokenId || !side || !amount) return res.status(400).json({ error: 'Need tokenId, side, amount' });
-    
-    const orderPayload = {
-      tokenID: tokenId,
-      price: price || 0.5,
-      side: side === 'SELL' ? Side.SELL : Side.BUY,
-      size: parseFloat(amount)
-    };
-    
+
+    const sideEnum = side === 'SELL' ? Side.SELL : Side.BUY;
+    const orderPrice = parseFloat(price) || 0.5;
+    const size = parseFloat(amount) / orderPrice;
+
     let tickSize = '0.01', negRisk = false;
     try {
-      const m = await client.getMarket(tokenId);
-      tickSize = m?.minimum_tick_size || '0.01';
-      negRisk = m?.neg_risk || false;
+      const nrResp = await fetch(`${HOST}/neg-risk?token_id=${tokenId}`);
+      const nrData = await nrResp.json();
+      if (nrData.neg_risk === true) negRisk = true;
     } catch(e) {}
-    
-    const signedOrder = await client.createOrder(orderPayload, { tickSize, negRisk });
-    const orderBody = JSON.stringify(signedOrder);
-    
-    // Build L2 auth headers
-    let polyHeaders = {};
     try {
-      polyHeaders = await client.createL2Headers('POST', '/order', orderBody);
-    } catch(e) {
-      console.log('L2 headers fallback:', e.message);
-    }
-    
-    const args = ['-s', '-w', '\n%{http_code}', '-X', 'POST', 'https://clob.polymarket.com/order'];
-    for (const [k, v] of Object.entries(polyHeaders)) {
-      args.push('-H', `${k}: ${v}`);
-    }
-    args.push('-H', 'Content-Type: application/json');
-    args.push('-d', orderBody);
-    
-    if (process.env.PROXY_URL) {
-      args.push('-x', process.env.PROXY_URL);
-    }
-    
-    console.log('[forward-order] Curling with proxy:', !!process.env.PROXY_URL);
-    const result = execFileSync('curl', args, { timeout: 30000, encoding: 'utf8' });
-    const lines = result.trim().split('\n');
-    const httpCode = parseInt(lines.pop()) || 0;
-    const body = lines.join('\n');
-    
-    let parsed;
-    try { parsed = JSON.parse(body); } catch(e) { parsed = { raw: body.substring(0, 500) }; }
-    
-    const isCF = body.includes('<!DOCTYPE') || body.includes('cloudflare');
+      const tsResp = await client.getTickSize(tokenId);
+      if (tsResp) tickSize = tsResp.toString();
+    } catch(e) {}
+
+    const tickDecimal = parseFloat(tickSize);
+    const roundedPrice = Math.round(orderPrice / tickDecimal) * tickDecimal;
+
+    console.log(`[forward-order] ${side} ${size.toFixed(2)} shares @ ${roundedPrice} (negRisk=${negRisk})`);
+
+    const response = await client.createAndPostOrder({
+      tokenID: tokenId,
+      price: roundedPrice,
+      size: Math.floor(size * 100) / 100,
+      side: sideEnum,
+    }, { tickSize, negRisk });
+
+    console.log(`[forward-order] Result:`, JSON.stringify(response));
+
     res.json({
-      success: httpCode === 200 && !isCF && (parsed.success !== false),
-      status: httpCode,
-      isCloudflare: isCF,
-      ...parsed
+      success: response.success || !!response.orderID,
+      orderID: response.orderID || response.orderid,
+      status: response.status,
+      ...response
     });
   } catch (err) {
     console.error('forward-order error:', err.message);

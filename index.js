@@ -3,6 +3,7 @@ import cors from 'cors';
 import { Wallet } from 'ethers';
 import { ClobClient, Side } from '@polymarket/clob-client';
 import dotenv from 'dotenv';
+import { execFileSync } from 'child_process';
 
 dotenv.config();
 
@@ -270,6 +271,83 @@ app.get('/market/:conditionId', auth, async (req, res) => {
 });
 
 // ============================================================
+
+// ============================================================
+// ORDER STORE - temporary in-memory storage for order data
+// ============================================================
+const orderStore = {};
+const ORDER_TTL = 86400000; // 24h
+
+app.post('/store-order', auth, (req, res) => {
+  const { key, data } = req.body;
+  if (!key || !data) return res.status(400).json({ error: 'Need key and data' });
+  orderStore[key] = { ...data, ts: Date.now() };
+  for (const k of Object.keys(orderStore)) {
+    if (Date.now() - orderStore[k].ts > ORDER_TTL) delete orderStore[k];
+  }
+  res.json({ success: true, key });
+});
+
+app.get('/get-order/:key', auth, (req, res) => {
+  const order = orderStore[req.params.key];
+  if (!order) return res.status(404).json({ error: 'Not found' });
+  res.json(order);
+});
+
+// ============================================================
+// FORWARD ORDER - calls /sign-order then curls with residential proxy
+// ============================================================
+app.post('/forward-order', auth, async (req, res) => {
+  try {
+    const { tokenId, side, amount, price } = req.body;
+    if (!tokenId || !side || !amount) return res.status(400).json({ error: 'Need tokenId, side, amount' });
+    
+    const port = process.env.PORT || 3000;
+    const signResp = await fetch(`http://localhost:${port}/sign-order`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.API_KEY || 'pm-trader-erik-2026' },
+      body: JSON.stringify({ tokenId, side, amount, price })
+    });
+    const signData = await signResp.json();
+    
+    if (!signData.postHeaders || !signData.postBodyRaw) {
+      return res.status(500).json({ error: 'Sign failed', signData });
+    }
+    
+    const args = ['-s', '-w', '\n%{http_code}', '-X', 'POST', 'https://clob.polymarket.com/order'];
+    for (const [k, v] of Object.entries(signData.postHeaders)) {
+      args.push('-H', `${k}: ${v}`);
+    }
+    args.push('-H', 'Content-Type: application/json');
+    args.push('-d', signData.postBodyRaw);
+    
+    if (process.env.PROXY_URL) {
+      args.push('-x', process.env.PROXY_URL);
+    }
+    
+    console.log('[forward-order] Curling, proxy:', !!process.env.PROXY_URL);
+    
+    const result = execFileSync('curl', args, { timeout: 15000, encoding: 'utf8' });
+    const lines = result.trim().split('\n');
+    const httpCode = parseInt(lines.pop()) || 0;
+    const body = lines.join('\n');
+    
+    let parsed;
+    try { parsed = JSON.parse(body); } catch(e) { parsed = { raw: body.substring(0, 500) }; }
+    
+    const isCF = body.includes('<!DOCTYPE') || body.includes('cloudflare');
+    res.json({
+      success: httpCode === 200 && !isCF && (parsed.success !== false),
+      status: httpCode,
+      isCloudflare: isCF,
+      ...parsed
+    });
+  } catch (err) {
+    console.error('forward-order error:', err.message);
+    res.status(500).json({ error: err.message.substring(0, 500) });
+  }
+});
+
 // START SERVER
 // ============================================================
 const PORT = process.env.PORT || 3000;

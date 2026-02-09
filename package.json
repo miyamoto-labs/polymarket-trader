@@ -1,6 +1,6 @@
 {
   "name": "polymarket-trader",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Polymarket CLOB trading microservice for n8n integration",
   "main": "index.js",
   "type": "module",

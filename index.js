@@ -285,18 +285,21 @@ app.post('/forward-order', auth, async (req, res) => {
 
     const sideEnum = side === 'SELL' ? Side.SELL : Side.BUY;
     const orderPrice = parseFloat(price) || 0.5;
-    const size = parseFloat(amount) / orderPrice;
+    const amt = parseFloat(amount) || 5;
+    const size = amt / orderPrice;
+
+    console.log(`[forward-order] Input: tokenId=${tokenId?.substring(0,20)}... side=${side} amount=${amt} price=${orderPrice} size=${size}`);
 
     let tickSize = '0.01', negRisk = false;
     try {
       const nrResp = await fetch(`${HOST}/neg-risk?token_id=${tokenId}`);
       const nrData = await nrResp.json();
       if (nrData.neg_risk === true) negRisk = true;
-    } catch(e) {}
+    } catch(e) { console.log('[forward-order] neg-risk check failed:', e.message); }
     try {
       const tsResp = await client.getTickSize(tokenId);
-      if (tsResp) tickSize = tsResp.toString();
-    } catch(e) {}
+      if (tsResp != null) tickSize = String(tsResp);
+    } catch(e) { console.log('[forward-order] tick-size check failed:', e.message); }
 
     const tickDecimal = parseFloat(tickSize);
     const roundedPrice = Math.round(orderPrice / tickDecimal) * tickDecimal;

@@ -54,10 +54,10 @@ async function initClient() {
     console.log(`  API Key: ${apiCreds.key.substring(0, 8)}...`);
     client = new ClobClient(HOST, CHAIN_ID, signer, apiCreds, SIGNATURE_TYPE, FUNDER);
     clientReady = true;
-    console.log('ÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ Client initialized successfully');
+    console.log('ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ Client initialized successfully');
   } catch (err) {
     initError = err.message;
-    console.error('ÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ Client initialization failed:', err.message);
+    console.error('ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ Client initialization failed:', err.message);
   }
 }
 
@@ -90,9 +90,9 @@ async function postOrderViaCurl(signedOrder, orderType = 'GTC') {
   });
   const headerFlags = Object.entries(headers).map(([k, v]) => `-H '${k}: ${v}'`).join(' ');
   const curlCmd = `curl -s -X POST 'https://clob.polymarket.com${endpoint}' ${headerFlags} -H 'User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36' -H 'Accept: application/json' -H 'Content-Type: application/json' -H 'Origin: https://polymarket.com' -H 'Referer: https://polymarket.com/' -d '${bodyStr.replace(/'/g, "'\\''")}'`;
-  console.log('ÃÂÃÂÃÂÃÂ°ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ¡ Posting order via curl...');
+  console.log('ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ°ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ¡ Posting order via curl...');
   const result = execSync(curlCmd, { encoding: 'utf8', timeout: 15000 });
-  console.log('ÃÂÃÂÃÂÃÂ°ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ¡ Curl response:', result.substring(0, 200));
+  console.log('ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ°ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ¡ Curl response:', result.substring(0, 200));
   return JSON.parse(result);
 }
 
@@ -162,7 +162,7 @@ app.post('/bet', auth, async (req, res) => {
     const roundedPrice = Math.round(orderPrice / tickDecimal) * tickDecimal;
     const roundedSize = Math.floor(size * 100) / 100;
 
-    console.log(`ÃÂÃÂÃÂÃÂ°ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ Placing order: ${side} ${roundedSize} shares @ ${roundedPrice}`);
+    console.log(`ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ°ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ Placing order: ${side} ${roundedSize} shares @ ${roundedPrice}`);
     const signedOrder = await client.createOrder({
       tokenID: tokenId, price: roundedPrice, size: roundedSize, side: sideEnum,
     });
@@ -170,10 +170,10 @@ app.post('/bet', auth, async (req, res) => {
     try {
       postResult = await postOrderViaCurl(signedOrder, orderType || 'GTC');
     } catch (curlErr) {
-      console.log(`ÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ ÃÂÃÂÃÂÃÂ¯ÃÂÃÂÃÂÃÂ¸ÃÂÃÂÃÂÃÂ Curl failed (${curlErr.message}), trying native...`);
+      console.log(`ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ¯ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ¸ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ Curl failed (${curlErr.message}), trying native...`);
       postResult = await client.postOrder(signedOrder);
     }
-    console.log(`ÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ Order result: ${JSON.stringify(postResult)}`);
+    console.log(`ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ Order result: ${JSON.stringify(postResult)}`);
     res.json({
       success: !postResult.error,
       orderId: postResult.orderID || postResult.orderid,
@@ -181,7 +181,7 @@ app.post('/bet', auth, async (req, res) => {
       size: roundedSize, amount: parseFloat(amount), tokenId, response: postResult
     });
   } catch (err) {
-    console.error(`ÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ Order failed: ${err.message}`);
+    console.error(`ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ Order failed: ${err.message}`);
     res.status(500).json({ error: err.message, detail: err.response?.data || err.stack?.substring(0, 500) });
   }
 });
@@ -224,7 +224,7 @@ app.post('/sign-order', auth, async (req, res) => {
       method: 'POST', requestPath: endpoint, body: bodyStr,
     });
 
-    console.log(`ÃÂÃÂÃÂÃÂ°ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ Order signed. Price: ${roundedPrice}, Size: ${roundedSize}, Side: ${side}`);
+    console.log(`ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ°ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ Order signed. Price: ${roundedPrice}, Size: ${roundedSize}, Side: ${side}`);
     res.json({
       success: true,
       postUrl: 'https://clob.polymarket.com/order',
@@ -234,7 +234,7 @@ app.post('/sign-order', auth, async (req, res) => {
       meta: { side, price: roundedPrice, size: roundedSize, amount: parseFloat(amount), tokenId }
     });
   } catch (err) {
-    console.error(`ÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ Sign failed: ${err.message}`);
+    console.error(`ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ Sign failed: ${err.message}`);
     res.status(500).json({ error: err.message });
   }
 });
@@ -270,61 +270,6 @@ app.get('/market/:conditionId', auth, async (req, res) => {
 });
 
 // ============================================================
-// FORWARD ORDER - calls /sign-order then curls result
-// ============================================================
-app.post('/forward-order', auth, async (req, res) => {
-  try {
-    const { tokenId, side, amount, price } = req.body;
-    if (!tokenId || !side || !amount) return res.status(400).json({ error: 'Need tokenId, side, amount' });
-    
-    // Step 1: Call /sign-order on localhost to get signed headers + body
-    const PORT = process.env.PORT || 3000;
-    const signResp = await fetch('http://localhost:' + PORT + '/sign-order', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.API_KEY || 'pm-trader-erik-2026' },
-      body: JSON.stringify({ tokenId, side: side || 'BUY', amount: String(amount), price: price || 0.5 })
-    });
-    const signData = await signResp.json();
-    if (!signData.postHeaders) return res.status(500).json({ error: 'Sign failed', details: signData });
-    
-    // Step 2: Write body to temp file and curl with signed headers
-    const { writeFileSync, unlinkSync } = await import('fs');
-    const tmpFile = '/tmp/order_' + Date.now() + '.json';
-    writeFileSync(tmpFile, signData.postBodyRaw);
-    
-    const hArgs = Object.entries(signData.postHeaders)
-      .map(([k, v]) => '-H "' + k + ': ' + v + '"')
-      .join(' ');
-    
-    const curlCmd = 'curl -s -w "\n%{http_code}" -X POST "https://clob.polymarket.com/order" ' + hArgs + ' -H "Content-Type: application/json" -d @' + tmpFile;
-    
-    console.log('forward-order: curling...');
-    const result = execSync(curlCmd, { timeout: 15000, encoding: 'utf8' });
-    try { unlinkSync(tmpFile); } catch(e) {}
-    
-    const lines = result.trim().split('\n');
-    const httpCode = parseInt(lines.pop());
-    const body = lines.join('\n');
-    
-    let parsed;
-    try { parsed = JSON.parse(body); } catch(e) { parsed = { raw: body.substring(0, 500) }; }
-    
-    const isCF = body.includes('<!DOCTYPE');
-    console.log('forward-order: status=' + httpCode + ' cf=' + isCF);
-    
-    res.json({
-      success: httpCode === 200 && !isCF,
-      status: httpCode,
-      isCloudflare: isCF,
-      response: parsed
-    });
-  } catch (err) {
-    console.error('forward-order error:', err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ============================================================
 // FORWARD ORDER - sign + post via curl (bypasses Cloudflare TLS)
 // ============================================================
 app.post('/forward-order', auth, async (req, res) => {
@@ -344,14 +289,12 @@ app.post('/forward-order', auth, async (req, res) => {
     const fs = require('fs');
     const tmpFile = '/tmp/order_' + Date.now() + '.json';
     fs.writeFileSync(tmpFile, orderBody);
-    // Use execFileSync with array args to avoid shell escaping issues
+    // Use execFileSync with array args (no shell escaping issues)
     const { execFileSync } = require('child_process');
-    const args = ['-s', '-w', '\n%{http_code}', '-X', 'POST', 'https://clob.polymarket.com/order'];
-    for (const [k, v] of Object.entries(l2Headers)) {
-      args.push('-H', k + ': ' + v);
-    }
-    args.push('-H', 'Content-Type: application/json', '-d', '@' + tmpFile);
-    const result = execFileSync('curl', args, { timeout: 15000, encoding: 'utf8' });
+    const curlArgs = ['-s', '-w', '\n%{http_code}', '-X', 'POST', 'https://clob.polymarket.com/order'];
+    for (const [k, v] of Object.entries(l2Headers)) { curlArgs.push('-H', k + ': ' + v); }
+    curlArgs.push('-H', 'Content-Type: application/json', '-d', '@' + tmpFile);
+    const result = execFileSync('curl', curlArgs, { timeout: 15000, encoding: 'utf8' });
     try { fs.unlinkSync(tmpFile); } catch(e) {}
     const lines = result.trim().split('\n');
     const httpCode = parseInt(lines.pop());
@@ -367,6 +310,6 @@ app.post('/forward-order', auth, async (req, res) => {
 // ============================================================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
-  console.log(`ÃÂÃÂÃÂÃÂ°ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ Polymarket Trader running on port ${PORT}`);
+  console.log(`ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ°ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ Polymarket Trader running on port ${PORT}`);
   await initClient();
 });

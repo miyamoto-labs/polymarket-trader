@@ -2,6 +2,8 @@ import express from 'express';
 import cors from 'cors';
 import { Wallet } from 'ethers';
 import { ClobClient, Side } from '@polymarket/clob-client';
+import { createL2Headers } from '@polymarket/clob-client/dist/headers/index.js';
+import { execFileSync } from 'child_process';
 import dotenv from 'dotenv';
 import { execFileSync } from 'child_process';
 
@@ -295,39 +297,52 @@ app.get('/get-order/:key', auth, (req, res) => {
 });
 
 // ============================================================
-// FORWARD ORDER - calls /sign-order then curls with residential proxy
+// FORWARD ORDER - sign locally + curl through residential proxy
 // ============================================================
 app.post('/forward-order', auth, async (req, res) => {
   try {
     const { tokenId, side, amount, price } = req.body;
     if (!tokenId || !side || !amount) return res.status(400).json({ error: 'Need tokenId, side, amount' });
     
-    const port = process.env.PORT || 3000;
-    const signResp = await fetch(`http://localhost:${port}/sign-order`, {
+    // Step 1: Create and sign the order
+    const orderPayload = {
+      tokenID: tokenId,
+      price: price || 0.5,
+      side: side === 'SELL' ? Side.SELL : Side.BUY,
+      size: parseFloat(amount)
+    };
+    
+    let tickSize = '0.01', negRisk = false;
+    try {
+      const m = await client.getMarket(tokenId);
+      tickSize = m?.minimum_tick_size || '0.01';
+      negRisk = m?.neg_risk || false;
+    } catch(e) { console.log('getMarket fallback:', e.message); }
+    
+    const signedOrder = await client.createOrder(orderPayload, { tickSize, negRisk });
+    const orderBody = JSON.stringify(signedOrder);
+    
+    // Step 2: Generate L2 auth headers
+    const polyHeaders = await createL2Headers(signer, apiCreds, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.API_KEY || 'pm-trader-erik-2026' },
-      body: JSON.stringify({ tokenId, side, amount, price })
+      requestPath: '/order',
+      body: orderBody
     });
-    const signData = await signResp.json();
     
-    if (!signData.postHeaders || !signData.postBodyRaw) {
-      return res.status(500).json({ error: 'Sign failed', signData });
-    }
-    
+    // Step 3: POST via curl + residential proxy
     const args = ['-s', '-w', '\n%{http_code}', '-X', 'POST', 'https://clob.polymarket.com/order'];
-    for (const [k, v] of Object.entries(signData.postHeaders)) {
-      args.push('-H', `${k}: ${v}`);
+    for (const [k, v] of Object.entries(polyHeaders)) {
+      args.push('-H', k + ': ' + v);
     }
     args.push('-H', 'Content-Type: application/json');
-    args.push('-d', signData.postBodyRaw);
+    args.push('-d', orderBody);
     
     if (process.env.PROXY_URL) {
       args.push('-x', process.env.PROXY_URL);
     }
     
-    console.log('[forward-order] Curling, proxy:', !!process.env.PROXY_URL);
-    
-    const result = execFileSync('curl', args, { timeout: 15000, encoding: 'utf8' });
+    console.log('[forward-order] Curling with proxy:', !!process.env.PROXY_URL);
+    const result = execFileSync('curl', args, { timeout: 30000, encoding: 'utf8' });
     const lines = result.trim().split('\n');
     const httpCode = parseInt(lines.pop()) || 0;
     const body = lines.join('\n');
@@ -348,7 +363,6 @@ app.post('/forward-order', auth, async (req, res) => {
   }
 });
 
-// START SERVER
 // ============================================================
 const PORT = process.env.PORT || 3000;
 

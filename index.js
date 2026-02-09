@@ -3,7 +3,7 @@ import cors from 'cors';
 import { Wallet } from 'ethers';
 import { ClobClient, Side } from '@polymarket/clob-client';
 import dotenv from 'dotenv';
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 
 dotenv.config();
 
@@ -294,16 +294,15 @@ app.get('/get-order/:key', auth, (req, res) => {
 });
 
 // ============================================================
-// FORWARD ORDER - signs via /sign-order, posts via native fetch
+// FORWARD ORDER - calls /sign-order then curls with optional residential proxy
 // ============================================================
 app.post('/forward-order', auth, async (req, res) => {
   try {
     const { tokenId, side, amount, price } = req.body;
     if (!tokenId || !side || !amount) return res.status(400).json({ error: 'Need tokenId, side, amount' });
     
-    // Step 1: Call our own /sign-order
     const port = process.env.PORT || 3000;
-    const signResp = await fetch('http://localhost:' + port + '/sign-order', {
+    const signResp = await fetch(`http://localhost:${port}/sign-order`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.API_KEY || 'pm-trader-erik-2026' },
       body: JSON.stringify({ tokenId, side, amount, price })
@@ -311,40 +310,35 @@ app.post('/forward-order', auth, async (req, res) => {
     const signData = await signResp.json();
     
     if (!signData.postHeaders || !signData.postBodyRaw) {
-      return res.status(500).json({ error: 'Sign failed', data: signData });
+      return res.status(500).json({ error: 'Sign failed', signData });
     }
     
-    // Step 2: POST via native fetch (undici - different TLS than axios)
-    const postHeaders = { ...signData.postHeaders, 'Content-Type': 'application/json' };
-    const clobResp = await fetch('https://clob.polymarket.com/order', {
-      method: 'POST',
-      headers: postHeaders,
-      body: signData.postBodyRaw
-    });
+    const args = ['-s', '-w', '\n%{http_code}', '-X', 'POST', 'https://clob.polymarket.com/order'];
+    for (const [k, v] of Object.entries(signData.postHeaders)) {
+      args.push('-H', `${k}: ${v}`);
+    }
+    args.push('-H', 'Content-Type: application/json');
+    args.push('-d', signData.postBodyRaw);
     
-    const clobText = await clobResp.text();
-    const httpCode = clobResp.status;
-    const isCF = clobText.includes('<!DOCTYPE');
+    if (process.env.PROXY_URL) {
+      args.push('-x', process.env.PROXY_URL);
+    }
+    
+    console.log('[forward-order] Curling, proxy:', !!process.env.PROXY_URL);
+    
+    const result = execFileSync('curl', args, { timeout: 15000, encoding: 'utf8' });
+    const lines = result.trim().split('\n');
+    const httpCode = parseInt(lines.pop()) || 0;
+    const body = lines.join('\n');
     
     let parsed;
-    try { parsed = JSON.parse(clobText); } catch(e) { parsed = { raw: clobText.substring(0, 500) }; }
+    try { parsed = JSON.parse(body); } catch(e) { parsed = { raw: body.substring(0, 500) }; }
     
-    if (isCF) {
-      // Cloudflare blocked native fetch too - try with undici dispatcher options
-      // or return the failure
-      return res.json({
-        success: false,
-        status: httpCode,
-        isCloudflare: true,
-        method: 'native-fetch',
-        response: parsed
-      });
-    }
-    
+    const isCF = body.includes('<!DOCTYPE') || body.includes('cloudflare');
     res.json({
-      success: httpCode === 200 && (parsed.success !== false),
+      success: httpCode === 200 && !isCF && (parsed.success !== false),
       status: httpCode,
-      isCloudflare: false,
+      isCloudflare: isCF,
       ...parsed
     });
   } catch (err) {
@@ -352,6 +346,7 @@ app.post('/forward-order', auth, async (req, res) => {
     res.status(500).json({ error: err.message.substring(0, 500) });
   }
 });
+
 
 // ============================================================
 // START SERVER

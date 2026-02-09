@@ -188,12 +188,17 @@ app.post('/bet', auth, async (req, res) => {
     const tickDecimal = parseFloat(tickSize);
     const roundedPrice = Math.round(orderPrice / tickDecimal) * tickDecimal;
 
-    console.log(`   Tick: ${tickSize}, negRisk: ${negRisk}, roundedPrice: ${roundedPrice}`);
+    const finalSize = Math.floor(size * 100) / 100;
+    if (!finalSize || finalSize <= 0 || isNaN(roundedPrice) || roundedPrice <= 0 || roundedPrice >= 1) {
+      return res.status(400).json({ error: `Invalid order params: size=${finalSize}, price=${roundedPrice}` });
+    }
+
+    console.log(`   Tick: ${tickSize}, negRisk: ${negRisk}, roundedPrice: ${roundedPrice}, size: ${finalSize}`);
 
     const response = await client.createAndPostOrder({
       tokenID: tokenId,
       price: roundedPrice,
-      size: Math.floor(size * 100) / 100,
+      size: finalSize,
       side: sideEnum,
     }, { tickSize, negRisk });
 
@@ -304,12 +309,17 @@ app.post('/forward-order', auth, async (req, res) => {
     const tickDecimal = parseFloat(tickSize);
     const roundedPrice = Math.round(orderPrice / tickDecimal) * tickDecimal;
 
-    console.log(`[forward-order] ${side} ${size.toFixed(2)} shares @ ${roundedPrice} (negRisk=${negRisk})`);
+    const finalSize = Math.floor(size * 100) / 100;
+    if (!finalSize || finalSize <= 0 || isNaN(roundedPrice) || roundedPrice <= 0 || roundedPrice >= 1) {
+      return res.status(400).json({ error: `Invalid order params: size=${finalSize}, price=${roundedPrice}, amt=${amt}` });
+    }
+
+    console.log(`[forward-order] ${side} ${finalSize} shares @ ${roundedPrice} (negRisk=${negRisk}, tickSize=${tickSize})`);
 
     const response = await client.createAndPostOrder({
       tokenID: tokenId,
       price: roundedPrice,
-      size: Math.floor(size * 100) / 100,
+      size: finalSize,
       side: sideEnum,
     }, { tickSize, negRisk });
 

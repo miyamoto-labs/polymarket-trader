@@ -283,17 +283,28 @@ app.get('/get-order/:key', auth, (req, res) => {
 });
 
 // Create a per-user CLOB client from their API credentials
-async function createUserClient(apiKey, apiSecret, apiPassphrase) {
+async function createUserClient(apiKey, apiSecret, apiPassphrase, privateKey, signatureType = 1) {
   const userCreds = { key: apiKey, secret: apiSecret, passphrase: apiPassphrase };
-  // For POLY_PROXY (type 2) users — no private key needed, just API creds
-  const userClient = new ClobClient(HOST, CHAIN_ID, undefined, userCreds, 2);
+  
+  // Create signer from private key if provided (for EOA / type 1)
+  let userSigner = undefined;
+  if (privateKey) {
+    try {
+      userSigner = new Wallet(privateKey);
+      console.log(`  User signer created: ${userSigner.address}`);
+    } catch (err) {
+      console.error(`  Failed to create signer: ${err.message}`);
+    }
+  }
+  
+  const userClient = new ClobClient(HOST, CHAIN_ID, userSigner, userCreds, signatureType, FUNDER);
   return userClient;
 }
 
 // Forward order (uses CLOB client directly)
 app.post('/forward-order', auth, async (req, res) => {
   try {
-    const { tokenId, side, amount, price, apiKey, apiSecret, apiPassphrase } = req.body;
+    const { tokenId, side, amount, price, apiKey, apiSecret, apiPassphrase, privateKey, signatureType } = req.body;
     if (!tokenId || !side || !amount) return res.status(400).json({ error: 'Need tokenId, side, amount' });
 
     // Determine which client to use
@@ -301,9 +312,10 @@ app.post('/forward-order', auth, async (req, res) => {
     let isUserWallet = false;
     if (apiKey && apiSecret && apiPassphrase) {
       try {
-        orderClient = await createUserClient(apiKey, apiSecret, apiPassphrase);
+        const userSignatureType = signatureType || 1; // Default to EOA
+        orderClient = await createUserClient(apiKey, apiSecret, apiPassphrase, privateKey, userSignatureType);
         isUserWallet = true;
-        console.log(`[forward-order] Using user wallet (key: ${apiKey.substring(0, 8)}...)`);
+        console.log(`[forward-order] Using user wallet (key: ${apiKey.substring(0, 8)}..., type: ${userSignatureType})`);
       } catch (credErr) {
         return res.status(400).json({ error: `Invalid API credentials: ${credErr.message}` });
       }

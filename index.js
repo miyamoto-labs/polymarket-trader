@@ -282,11 +282,36 @@ app.get('/get-order/:key', auth, (req, res) => {
   res.json(order);
 });
 
+// Create a per-user CLOB client from their API credentials
+async function createUserClient(apiKey, apiSecret, apiPassphrase) {
+  const userCreds = { key: apiKey, secret: apiSecret, passphrase: apiPassphrase };
+  // For POLY_PROXY (type 2) users — no private key needed, just API creds
+  const userClient = new ClobClient(HOST, CHAIN_ID, undefined, userCreds, 2);
+  return userClient;
+}
+
 // Forward order (uses CLOB client directly)
 app.post('/forward-order', auth, async (req, res) => {
   try {
-    const { tokenId, side, amount, price } = req.body;
+    const { tokenId, side, amount, price, apiKey, apiSecret, apiPassphrase } = req.body;
     if (!tokenId || !side || !amount) return res.status(400).json({ error: 'Need tokenId, side, amount' });
+
+    // Determine which client to use
+    let orderClient;
+    let isUserWallet = false;
+    if (apiKey && apiSecret && apiPassphrase) {
+      try {
+        orderClient = await createUserClient(apiKey, apiSecret, apiPassphrase);
+        isUserWallet = true;
+        console.log(`[forward-order] Using user wallet (key: ${apiKey.substring(0, 8)}...)`);
+      } catch (credErr) {
+        return res.status(400).json({ error: `Invalid API credentials: ${credErr.message}` });
+      }
+    } else {
+      if (!clientReady) return res.status(503).json({ error: 'Default client not ready', detail: initError });
+      orderClient = client;
+      console.log(`[forward-order] Using default wallet`);
+    }
 
     const sideEnum = side === 'SELL' ? Side.SELL : Side.BUY;
     const orderPrice = parseFloat(price) || 0.5;
@@ -302,9 +327,18 @@ app.post('/forward-order', auth, async (req, res) => {
       if (nrData.neg_risk === true) negRisk = true;
     } catch(e) { console.log('[forward-order] neg-risk check failed:', e.message); }
     try {
-      const tsResp = await client.getTickSize(tokenId);
+      const tsResp = await orderClient.getTickSize(tokenId);
       if (tsResp != null) tickSize = String(tsResp);
-    } catch(e) { console.log('[forward-order] tick-size check failed:', e.message); }
+    } catch(e) {
+      // Fall back to default client for market data if user client fails
+      if (isUserWallet && clientReady) {
+        try {
+          const tsResp = await client.getTickSize(tokenId);
+          if (tsResp != null) tickSize = String(tsResp);
+        } catch(e2) {}
+      }
+      console.log('[forward-order] tick-size check failed:', e.message);
+    }
 
     const tickDecimal = parseFloat(tickSize);
     const roundedPrice = Math.round(orderPrice / tickDecimal) * tickDecimal;
@@ -316,7 +350,7 @@ app.post('/forward-order', auth, async (req, res) => {
 
     console.log(`[forward-order] ${side} ${finalSize} shares @ ${roundedPrice} (negRisk=${negRisk}, tickSize=${tickSize})`);
 
-    const response = await client.createAndPostOrder({
+    const response = await orderClient.createAndPostOrder({
       tokenID: tokenId,
       price: roundedPrice,
       size: finalSize,
@@ -329,11 +363,106 @@ app.post('/forward-order', auth, async (req, res) => {
       success: response.success || !!response.orderID,
       orderID: response.orderID || response.orderid,
       status: response.status,
+      userWallet: isUserWallet,
       ...response
     });
   } catch (err) {
     console.error('forward-order error:', err.message);
     res.status(500).json({ error: err.message.substring(0, 500) });
+  }
+});
+
+// ============================================================
+// Wallet Management
+// ============================================================
+
+// Create new wallet
+app.post('/create-wallet', auth, async (req, res) => {
+  try {
+    const { telegramUserId } = req.body;
+    
+    if (!telegramUserId) {
+      return res.status(400).json({ error: 'Missing telegramUserId' });
+    }
+    
+    console.log(`[create-wallet] Generating new wallet for user ${telegramUserId}`);
+    
+    // Generate new random wallet
+    const newWallet = Wallet.createRandom();
+    const walletAddress = newWallet.address;
+    const privateKey = newWallet.privateKey;
+    
+    console.log(`[create-wallet] Created wallet: ${walletAddress}`);
+    
+    // Derive CLOB API credentials from the wallet
+    const tempClient = new ClobClient(HOST, CHAIN_ID, newWallet, undefined, SIGNATURE_TYPE, FUNDER);
+    const apiCreds = await tempClient.createOrDeriveApiKey();
+    
+    if (!apiCreds || !apiCreds.key || !apiCreds.secret || !apiCreds.passphrase) {
+      return res.status(500).json({ error: 'Failed to derive API credentials' });
+    }
+    
+    console.log(`[create-wallet] Derived API key: ${apiCreds.key.substring(0, 8)}...`);
+    
+    // Return wallet info + API credentials
+    // NOTE: Private key is returned so bot can store it encrypted
+    res.json({
+      walletAddress,
+      privateKey,
+      apiKey: apiCreds.key,
+      apiSecret: apiCreds.secret,
+      apiPassphrase: apiCreds.passphrase
+    });
+    
+  } catch (err) {
+    console.error('[create-wallet] Error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Import existing wallet
+app.post('/import-wallet', auth, async (req, res) => {
+  try {
+    const { telegramUserId, privateKey } = req.body;
+    
+    if (!telegramUserId || !privateKey) {
+      return res.status(400).json({ error: 'Missing telegramUserId or privateKey' });
+    }
+    
+    console.log(`[import-wallet] Importing wallet for user ${telegramUserId}`);
+    
+    // Create wallet from private key
+    let wallet;
+    try {
+      wallet = new Wallet(privateKey);
+    } catch (err) {
+      return res.status(400).json({ error: 'Invalid private key format' });
+    }
+    
+    const walletAddress = wallet.address;
+    console.log(`[import-wallet] Wallet address: ${walletAddress}`);
+    
+    // Derive CLOB API credentials
+    const tempClient = new ClobClient(HOST, CHAIN_ID, wallet, undefined, SIGNATURE_TYPE, FUNDER);
+    const apiCreds = await tempClient.createOrDeriveApiKey();
+    
+    if (!apiCreds || !apiCreds.key || !apiCreds.secret || !apiCreds.passphrase) {
+      return res.status(500).json({ error: 'Failed to derive API credentials' });
+    }
+    
+    console.log(`[import-wallet] Derived API key: ${apiCreds.key.substring(0, 8)}...`);
+    
+    // Return wallet info + API credentials
+    res.json({
+      walletAddress,
+      apiKey: apiCreds.key,
+      apiSecret: apiCreds.secret,
+      apiPassphrase: apiCreds.passphrase
+    });
+    
+  } catch (err) {
+    console.error('[import-wallet] Error:', err.message);
+    res.status(500).json({ error: err.message });
   }
 });
 

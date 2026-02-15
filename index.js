@@ -2,6 +2,8 @@ import express from 'express';
 import { execFileSync } from 'child_process';
 import cors from 'cors';
 import { Wallet } from 'ethers';
+import ethers from 'ethers';
+const { providers: { StaticJsonRpcProvider }, Contract } = ethers;
 import { ClobClient, Side } from '@polymarket/clob-client';
 import dotenv from 'dotenv';
 
@@ -288,16 +290,19 @@ async function createUserClient(apiKey, apiSecret, apiPassphrase, privateKey, si
   
   // Create signer from private key if provided (for EOA / type 1)
   let userSigner = undefined;
+  let userFunder = FUNDER; // Default to env funder
+  
   if (privateKey) {
     try {
       userSigner = new Wallet(privateKey);
+      userFunder = userSigner.address; // Use user's address as funder for signature validation
       console.log(`  User signer created: ${userSigner.address}`);
     } catch (err) {
       console.error(`  Failed to create signer: ${err.message}`);
     }
   }
   
-  const userClient = new ClobClient(HOST, CHAIN_ID, userSigner, userCreds, signatureType, FUNDER);
+  const userClient = new ClobClient(HOST, CHAIN_ID, userSigner, userCreds, signatureType, userFunder);
   return userClient;
 }
 
@@ -371,16 +376,27 @@ app.post('/forward-order', auth, async (req, res) => {
 
     console.log(`[forward-order] Result:`, JSON.stringify(response));
 
+    // Check if response indicates failure
+    if (response.success === false || response.error || response.errorMsg) {
+      return res.status(400).json({
+        success: false,
+        status: response.status || 400,
+        userWallet: isUserWallet,
+        error: response.error || response.errorMsg || 'Order failed',
+        details: response
+      });
+    }
+
     res.json({
-      success: response.success || !!response.orderID,
+      success: true,
       orderID: response.orderID || response.orderid,
       status: response.status,
       userWallet: isUserWallet,
       ...response
     });
   } catch (err) {
-    console.error('forward-order error:', err.message);
-    res.status(500).json({ error: err.message.substring(0, 500) });
+    console.error('[forward-order] Exception:', err);
+    res.status(500).json({ error: err.message.substring(0, 500), stack: err.stack?.substring(0, 500) });
   }
 });
 
@@ -406,8 +422,8 @@ app.post('/create-wallet', auth, async (req, res) => {
     
     console.log(`[create-wallet] Created wallet: ${walletAddress}`);
     
-    // Derive CLOB API credentials from the wallet
-    const tempClient = new ClobClient(HOST, CHAIN_ID, newWallet, undefined, SIGNATURE_TYPE, FUNDER);
+    // Derive CLOB API credentials from the wallet (use wallet address as funder for proper signature validation)
+    const tempClient = new ClobClient(HOST, CHAIN_ID, newWallet, undefined, 2, walletAddress);
     const apiCreds = await tempClient.createOrDeriveApiKey();
     
     if (!apiCreds || !apiCreds.key || !apiCreds.secret || !apiCreds.passphrase) {
@@ -454,8 +470,8 @@ app.post('/import-wallet', auth, async (req, res) => {
     const walletAddress = wallet.address;
     console.log(`[import-wallet] Wallet address: ${walletAddress}`);
     
-    // Derive CLOB API credentials
-    const tempClient = new ClobClient(HOST, CHAIN_ID, wallet, undefined, SIGNATURE_TYPE, FUNDER);
+    // Derive CLOB API credentials (use wallet address as funder for proper signature validation)
+    const tempClient = new ClobClient(HOST, CHAIN_ID, wallet, undefined, 2, walletAddress);
     const apiCreds = await tempClient.createOrDeriveApiKey();
     
     if (!apiCreds || !apiCreds.key || !apiCreds.secret || !apiCreds.passphrase) {
@@ -474,6 +490,63 @@ app.post('/import-wallet', auth, async (req, res) => {
     
   } catch (err) {
     console.error('[import-wallet] Error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================
+// APPROVE CTF EXCHANGE (one-time setup for selling)
+// ============================================================
+app.post('/approve-ctf', auth, async (req, res) => {
+  try {
+    if (!signer) return res.status(503).json({ error: 'Signer not ready' });
+    
+    const provider = new ethers.providers.StaticJsonRpcProvider('https://polygon-bor-rpc.publicnode.com', 137);
+    const wallet = new Wallet(PRIVATE_KEY, provider);
+    
+    // Polymarket CTF Exchange on Polygon
+    const CTF_EXCHANGE = '0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E';
+    const NEG_RISK_EXCHANGE = '0xC5d563A36AE78145C45a50134d48A1215220f80a';
+    const CTF_CONTRACT = '0x4D97DCd97eC945f40cF65F87097ACe5EA0476045';
+    
+    // ERC1155 setApprovalForAll
+    const abi = ['function setApprovalForAll(address operator, bool approved) external',
+                 'function isApprovedForAll(address owner, address operator) view returns (bool)'];
+    const ctf = new ethers.Contract(CTF_CONTRACT, abi, wallet);
+    
+    // Check current approvals
+    const isApprovedCTF = await ctf.isApprovedForAll(wallet.address, CTF_EXCHANGE);
+    const isApprovedNeg = await ctf.isApprovedForAll(wallet.address, NEG_RISK_EXCHANGE);
+    
+    // Fetch current gas from network
+    const feeData = await provider.getFeeData();
+    const baseFee = feeData.lastBaseFeePerGas || ethers.utils.parseUnits('100', 'gwei');
+    const gasOverrides = { 
+      maxFeePerGas: baseFee.mul(2), 
+      maxPriorityFeePerGas: ethers.utils.parseUnits('50', 'gwei'),
+      gasLimit: 100000
+    };
+    const txns = [];
+    if (!isApprovedCTF) {
+      const tx1 = await ctf.setApprovalForAll(CTF_EXCHANGE, true, gasOverrides);
+      txns.push({ exchange: 'CTF', hash: tx1.hash });
+      await tx1.wait();
+    }
+    if (!isApprovedNeg) {
+      const tx2 = await ctf.setApprovalForAll(NEG_RISK_EXCHANGE, true, gasOverrides);
+      txns.push({ exchange: 'NegRisk', hash: tx2.hash });
+      await tx2.wait();
+    }
+    
+    res.json({ 
+      success: true, 
+      approvedCTF: true, 
+      approvedNegRisk: true,
+      transactions: txns,
+      message: txns.length ? `Approved ${txns.length} exchange(s)` : 'Already approved'
+    });
+  } catch (err) {
+    console.error('[approve-ctf] Error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
